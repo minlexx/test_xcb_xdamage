@@ -53,12 +53,15 @@ int main(int argc, char *argv[])
 
     xcb_window_t root_window = 0;
     xcb_screen_t *screen = screen_of_display(xconn, screen_preferred);
-    if (screen) {
-        printf("Preferred screen size: %d x %d @ %d BPP\n",
-               (int)screen->width_in_pixels, (int)screen->height_in_pixels,
-               (int)screen->root_depth);
-        root_window = screen->root;
+    if (!screen) {
+        fprintf(stderr, "Cannot get parameters of the default screen!\n");
+        xcb_disconnect(xconn);
     }
+
+    printf("Preferred screen size: %d x %d @ %d BPP\n",
+           (int)screen->width_in_pixels, (int)screen->height_in_pixels,
+           (int)screen->root_depth);
+    root_window = screen->root;
 
     xcb_disconnect(xconn);
     return 0;
