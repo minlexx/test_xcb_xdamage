@@ -194,6 +194,7 @@ int main(int argc, char *argv[])
                 //
                 uint8_t *output_name = xcb_randr_get_output_info_name(output_info);
                 int namelen = xcb_randr_get_output_info_name_length(output_info);
+                memset(primary_screen_name, 0, sizeof(primary_screen_name));
                 strncpy(primary_screen_name, output_name, sizeof(primary_screen_name)-1);
                 primary_screen_rect.x = crtc_info->x;
                 primary_screen_rect.y = crtc_info->y;
@@ -215,7 +216,6 @@ int main(int argc, char *argv[])
 
     // in XCB we need to manually generate IDs
     xcb_damage_damage_t dmg = xcb_generate_id(xconn);
-    //xcb_damage_create(xconn, dmg, root_window, XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
     xcb_damage_create(xconn, dmg, root_window, XCB_DAMAGE_REPORT_LEVEL_RAW_RECTANGLES);
 
     printf("Generated ID for damage handle = %u\n", dmg);
@@ -234,11 +234,16 @@ int main(int argc, char *argv[])
         if ((evt_type >= g_first_xdamage_event) &&
                 (evt_type <= (g_first_xdamage_event + XCB_DAMAGE_NOTIFY))) {
             xcb_damage_notify_event_t *xdevt = (xcb_damage_notify_event_t *)evt;
+            //
+            // this is dangerous, becauses it causes writes to output in console and
+            // cause even more damage events
             printf(" * this is  damage event, tmstamp = %u\n", xdevt->timestamp);
             printf("    damage handle = %u\n", xdevt->damage);
+            // this is just damaged area rectangle
             printf("    area     : (%d,%d) sz (%d, %d)\n",
                    (int)xdevt->area.x,     (int)xdevt->area.y,
                    (int)xdevt->area.width, (int)xdevt->area.height);
+            // geometry is always the full window size
             printf("    geometry : (%d,%d) sz (%d, %d)\n",
                    (int)xdevt->geometry.x,     (int)xdevt->geometry.y,
                    (int)xdevt->geometry.width, (int)xdevt->geometry.height);
