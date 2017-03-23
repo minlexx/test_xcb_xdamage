@@ -9,7 +9,10 @@
 #include <xcb/xproto.h>
 #include <xcb/damage.h>
 #include <xcb/shm.h>
+#include <xcb/xcb_image.h>
 #include <xcb/randr.h>
+
+#include "png_saver.h"
 
 
 int g_first_xdamage_event = 0;
@@ -213,6 +216,22 @@ int main(int argc, char *argv[])
         free(output_info);
     }
     free(screenres_reply);
+
+    // get image of primary screen and try to save it
+    xcb_image_t *screenshot = xcb_image_get(xconn, root_window,
+                                primary_screen_rect.x,
+                                primary_screen_rect.y,
+                                primary_screen_rect.width,
+                                primary_screen_rect.height,
+                                0xFFFFFFFF, XCB_IMAGE_FORMAT_Z_PIXMAP);
+    if (screenshot) {
+        printf("We took a screenshot of primary screen!\n");
+        printf("  img data: base = %p, data = %p\n", screenshot->base, screenshot->data);
+
+        save_as_png(screenshot);
+        xcb_image_destroy(screenshot);
+        screenshot = NULL;
+    }
 
     // in XCB we need to manually generate IDs
     xcb_damage_damage_t dmg = xcb_generate_id(xconn);
