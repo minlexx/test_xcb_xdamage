@@ -248,7 +248,7 @@ int main(int argc, char *argv[])
         evt = xcb_wait_for_event(xconn);
         /* Strip off the highest bit (set if the event is generated) !!! */
         int evt_type = (int)evt->response_type & 0x7F;
-        printf("got event %d\n", evt_type);
+        //printf("got event %d\n", evt_type);
 
         if ((evt_type >= g_first_xdamage_event) &&
                 (evt_type <= (g_first_xdamage_event + XCB_DAMAGE_NOTIFY))) {
@@ -256,6 +256,7 @@ int main(int argc, char *argv[])
             //
             // this is dangerous, becauses it causes writes to output in console and
             // cause even more damage events
+#if 0
             printf(" * this is  damage event, tmstamp = %u\n", xdevt->timestamp);
             printf("    damage handle = %u\n", xdevt->damage);
             // this is just damaged area rectangle
@@ -266,6 +267,18 @@ int main(int argc, char *argv[])
             printf("    geometry : (%d,%d) sz (%d, %d)\n",
                    (int)xdevt->geometry.x,     (int)xdevt->geometry.y,
                    (int)xdevt->geometry.width, (int)xdevt->geometry.height);
+#endif
+
+            // save damage rect screenshot
+            screenshot = xcb_image_get(xconn, root_window,
+                                       xdevt->area.x, xdevt->area.y,
+                                       xdevt->area.width, xdevt->area.height,
+                                       0xFFFFFFFF, XCB_IMAGE_FORMAT_Z_PIXMAP);
+            if (screenshot) {
+                save_as_png(screenshot);
+                xcb_image_destroy(screenshot);
+                screenshot = NULL;
+            }
 
             //xcb_damage_subtract(xconn, dmg, XCB_NONE, XCB_NONE);
         }
