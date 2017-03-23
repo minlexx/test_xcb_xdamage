@@ -52,7 +52,7 @@ void save_as_png(xcb_image_t *img) {
     // Use png_set_filler().
     png_set_filler(png_ptr, 0, PNG_FILLER_AFTER);
     //png_set_swap_alpha(png_ptr); // RGBA > ARGB if needed
-    //png_set_bgr(png_ptr); // RGB > BGR if needed
+    png_set_bgr(png_ptr); // RGB > BGR if needed, we need this
 
 
     // write image data
