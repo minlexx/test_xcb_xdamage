@@ -14,7 +14,7 @@ pkg_check_modules(LIBPNG libpng)
 
 # message(${XCB_INCLUDE_DIRS} ${XCB_LIBRARIES})
 
-add_executable(${PROJECT_NAME} "main.c")
+add_executable(${PROJECT_NAME} "main.c" "png_saver.c")
 
 target_include_directories(${PROJECT_NAME} PUBLIC
     ${LIBPNG_INCLUDEDIR}
