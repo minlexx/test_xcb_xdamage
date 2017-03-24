@@ -297,6 +297,9 @@ int main(int argc, char *argv[])
                screenshot_shm, screenshot_shm->base, screenshot_shm->data);
 
         // create chared memory segment in our process
+        // shm segment is allocated and attached only once, large enough to
+        //    store the whole image of primary monitor. it will be detached
+        //    at the end of the program
         shm_id = shmget(IPC_PRIVATE, screenshot_shm->size, IPC_CREAT | 0777);
         if (shm_id == -1) {
             fprintf(stderr, "ERROR: cannot get %ul bytes of shared memory!\n",
@@ -311,7 +314,7 @@ int main(int argc, char *argv[])
         shm_segment = xcb_generate_id(xconn);
         xcb_shm_attach(xconn, shm_segment, shm_id, 0);
 
-        // get image data into shared memory segment
+        // get image data from X server into shared memory segment
         xcb_shm_get_image_cookie_t sgi_cookie = xcb_shm_get_image(
                     xconn,
                     root_window,
@@ -403,9 +406,6 @@ int main(int argc, char *argv[])
                             xconn, sgi_cookie, NULL);
 
                 if (sgi_reply) {
-                    //printf("Got xcb_shm_get_image_reply(), data at %p, will save "
-                    //       "as PNG from shared mem\n", shm_data);
-
                     screenshot_shm = xcb_image_create_native(
                                 xconn,
                                 xdevt->area.width,
@@ -440,9 +440,9 @@ int main(int argc, char *argv[])
     xcb_damage_destroy(xconn, dmg);
 
     if (g_can_use_xshm && (shm_id != -1)) {
-        xcb_shm_detach(xconn, shm_segment);
-        shmctl(shm_id, IPC_RMID, 0);
-        shmdt(shm_data);
+        xcb_shm_detach(xconn, shm_segment);  // inform X server to detach it's shm segment
+        shmdt(shm_data);  // detach shared memory segment from our address space
+        shmctl(shm_id, IPC_RMID, 0);  // mark segment as not used any more (by our process)
     }
 
     xcb_disconnect(xconn);
