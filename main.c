@@ -17,6 +17,7 @@
 
 int g_first_xdamage_event = 0;
 int g_first_xdamage_error = 0;
+int g_can_use_xshm = 0;
 
 
 int load_x_extensions(xcb_connection_t *conn) {
@@ -31,8 +32,11 @@ int load_x_extensions(xcb_connection_t *conn) {
                 conn, &xcb_shm_id);
     if (!ext_shm_data) {
         fprintf(stderr, "Failed to load XShm extension!\n");
-        xcb_disconnect(conn);
-        return 0;
+        //xcb_disconnect(conn);
+        //return 0;
+        g_can_use_xshm = 0;
+    } else {
+        g_can_use_xshm = 1;
     }
     const xcb_query_extension_reply_t *ext_randr_data = xcb_get_extension_data(
                 conn, &xcb_randr_id);
@@ -63,19 +67,21 @@ int load_x_extensions(xcb_connection_t *conn) {
            xdamage_version->major_version, xdamage_version->minor_version);
     free(xdamage_version);
 
-    xcb_shm_query_version_reply_t *xshm_version = xcb_shm_query_version_reply(
-                conn, xcb_shm_query_version(conn), NULL);
-    if (!xshm_version) {
-        fprintf(stderr, "Failed to get XShm extension version!\n");
-        xcb_disconnect(conn);
-        return 0;
+    if (g_can_use_xshm) {
+        xcb_shm_query_version_reply_t *xshm_version = xcb_shm_query_version_reply(
+                    conn, xcb_shm_query_version(conn), NULL);
+        if (!xshm_version) {
+            fprintf(stderr, "Failed to get XShm extension version!\n");
+            xcb_disconnect(conn);
+            return 0;
+        }
+        printf("Loaded XShm extension version: %d.%d; pixmap format: %d; shared pixmaps: %d\n",
+               (int)xshm_version->major_version,
+               (int)xshm_version->minor_version,
+               (int)xshm_version->pixmap_format,
+               (int)xshm_version->shared_pixmaps);
+        free(xshm_version);
     }
-    printf("Loaded XShm extension version: %d.%d; pixmap format: %d; shared pixmaps: %d\n",
-           (int)xshm_version->major_version,
-           (int)xshm_version->minor_version,
-           (int)xshm_version->pixmap_format,
-           (int)xshm_version->shared_pixmaps);
-    free(xshm_version);
 
     xcb_randr_query_version_reply_t *xrandr_version = xcb_randr_query_version_reply(
                 conn, xcb_randr_query_version(
@@ -105,6 +111,29 @@ xcb_screen_t *screen_of_display (xcb_connection_t *conn, int screen) {
         if (screen == 0)
             return iter.data;
     return NULL;
+}
+
+
+void fix_update_rectangle_bounds(xcb_rectangle_t *r, const xcb_rectangle_t *bounds) {
+    // rectangle end coordinates
+    int rx2 = r->x + r->width  - 1;
+    int ry2 = r->y + r->height - 1;
+    // bounds end coordinates
+    int bx2 = bounds->x + bounds->width  - 1;
+    int by2 = bounds->y + bounds->height - 1;
+    // fix rect coords
+    // r->x must be between [bounds->x .. bx2]
+    if (r->x < bounds->x) r->x = bounds->x;
+    if (r->y < bounds->y) r->y = bounds->y;
+    if (r->x > bx2) r->x = bx2;
+    if (r->y > by2) r->y = by2;
+    if (rx2 < bounds->x)  rx2 = bounds->x;
+    if (ry2 < bounds->y)  ry2 = bounds->y;
+    if (rx2 > bx2) rx2 = bx2;
+    if (ry2 > by2) ry2 = by2;
+    // recalc new rect size
+    r->width = rx2 - r->x + 1;
+    r->height = ry2 - r->y + 1;
 }
 
 
@@ -198,7 +227,9 @@ int main(int argc, char *argv[])
                 uint8_t *output_name = xcb_randr_get_output_info_name(output_info);
                 int namelen = xcb_randr_get_output_info_name_length(output_info);
                 memset(primary_screen_name, 0, sizeof(primary_screen_name));
-                strncpy(primary_screen_name, output_name, sizeof(primary_screen_name)-1);
+                if (namelen >= sizeof(primary_screen_name))
+                    namelen = sizeof(primary_screen_name)-1;
+                strncpy(primary_screen_name, output_name, namelen);
                 primary_screen_rect.x = crtc_info->x;
                 primary_screen_rect.y = crtc_info->y;
                 primary_screen_rect.width = crtc_info->width;
@@ -217,20 +248,97 @@ int main(int argc, char *argv[])
     }
     free(screenres_reply);
 
-    // get image of primary screen and try to save it
-    xcb_image_t *screenshot = xcb_image_get(xconn, root_window,
-                                primary_screen_rect.x,
-                                primary_screen_rect.y,
-                                primary_screen_rect.width,
-                                primary_screen_rect.height,
-                                0xFFFFFFFF, XCB_IMAGE_FORMAT_Z_PIXMAP);
-    if (screenshot) {
-        printf("We took a screenshot of primary screen!\n");
-        printf("  img data: base = %p, data = %p\n", screenshot->base, screenshot->data);
+    // shared memory vars
+    xcb_shm_seg_t shm_segment = XCB_NONE;
+    int shm_id = -1;  // invalid value
+    uint8_t *shm_data = NULL;
+    xcb_image_t *screenshot = NULL;
+    xcb_image_t *screenshot_shm = NULL;
 
-        save_as_png(screenshot);
-        xcb_image_destroy(screenshot);
-        screenshot = NULL;
+    if (g_can_use_xshm == 0) {
+        // not using shared memory
+        // get image of primary screen and try to save it
+        screenshot = xcb_image_get(xconn, root_window,
+                                    primary_screen_rect.x,
+                                    primary_screen_rect.y,
+                                    primary_screen_rect.width,
+                                    primary_screen_rect.height,
+                                    0xFFFFFFFF, XCB_IMAGE_FORMAT_Z_PIXMAP);
+        if (screenshot) {
+            printf("We took a screenshot of primary screen!\n");
+            printf("  img data: image structure = %p, base = %p, data = %p\n",
+                   screenshot, screenshot->base, screenshot->data);
+            save_as_png(screenshot);
+            xcb_image_destroy(screenshot);
+            screenshot = NULL;
+        }
+    } else {
+        // use shared memory
+
+        // create an image to store data to
+        //  " If base == 0 and bytes == ~0 and data == 0 on "
+        //  " entry, no storage will be auto-allocated.     "
+        screenshot_shm = xcb_image_create_native(
+                    xconn,
+                    primary_screen_rect.width,
+                    primary_screen_rect.height,
+                    XCB_IMAGE_FORMAT_Z_PIXMAP,
+                    screen->root_depth,  // this would probably be = 24
+                    NULL,         // base == 0
+                    (uint32_t)~0, // bytes == ~0
+                    NULL);        // and data == 0, no storage will be allocated
+        if( !screenshot_shm) {
+            fprintf(stderr, "ERROR: cannot create image with size %d x %d!\n",
+                    primary_screen_rect.width, primary_screen_rect.height);
+            xcb_disconnect(xconn);
+            return EXIT_FAILURE;
+        }
+        printf("Allocated native image structure = %p, base = %p, data = %p\n",
+               screenshot_shm, screenshot_shm->base, screenshot_shm->data);
+
+        // create chared memory segment in our process
+        shm_id = shmget(IPC_PRIVATE, screenshot_shm->size, IPC_CREAT | 0777);
+        if (shm_id == -1) {
+            fprintf(stderr, "ERROR: cannot get %ul bytes of shared memory!\n",
+                    screenshot->size);
+            xcb_disconnect(xconn);
+            return EXIT_FAILURE;
+        }
+        // attach to our process address sapce
+        shm_data = shmat(shm_id, NULL, 0);
+
+        // attach this also to X server
+        shm_segment = xcb_generate_id(xconn);
+        xcb_shm_attach(xconn, shm_segment, shm_id, 0);
+
+        // get image data into shared memory segment
+        xcb_shm_get_image_cookie_t sgi_cookie = xcb_shm_get_image(
+                    xconn,
+                    root_window,
+                    primary_screen_rect.x,
+                    primary_screen_rect.y,
+                    primary_screen_rect.width,
+                    primary_screen_rect.height,
+                    0xFFFFFFFF,
+                    XCB_IMAGE_FORMAT_Z_PIXMAP,
+                    shm_segment,
+                    0);
+
+        xcb_shm_get_image_reply_t *sgi_reply = xcb_shm_get_image_reply(
+                    xconn, sgi_cookie, NULL);
+
+        if (sgi_reply) {
+            printf("Got xcb_shm_get_image_reply(), data at %p, will save "
+                   "as PNG from shared mem\n", shm_data);
+
+            screenshot_shm->data = shm_data;
+            save_as_png(screenshot_shm);
+
+            free(sgi_reply);
+        }
+
+        xcb_image_destroy(screenshot_shm);
+        screenshot_shm = NULL;
     }
 
     // in XCB we need to manually generate IDs
@@ -269,11 +377,55 @@ int main(int argc, char *argv[])
                    (int)xdevt->geometry.width, (int)xdevt->geometry.height);
 #endif
 
+            fix_update_rectangle_bounds(&xdevt->area, &primary_screen_rect);
+            // after that fix rectangle can have a null size
+            if ((xdevt->area.width <= 1) && (xdevt->area.height <= 1))
+                continue;  // skip, rect too small or null
+
             // save damage rect screenshot
-            screenshot = xcb_image_get(xconn, root_window,
-                                       xdevt->area.x, xdevt->area.y,
-                                       xdevt->area.width, xdevt->area.height,
-                                       0xFFFFFFFF, XCB_IMAGE_FORMAT_Z_PIXMAP);
+            if (g_can_use_xshm == 0) {
+                // usual alow XGetImage with all image bytes sent over wire
+                screenshot = xcb_image_get(xconn, root_window,
+                                           xdevt->area.x, xdevt->area.y,
+                                           xdevt->area.width, xdevt->area.height,
+                                           0xFFFFFFFF, XCB_IMAGE_FORMAT_Z_PIXMAP);
+            } else {
+                // use shared memory
+                // get image data into shared memory segment
+                xcb_shm_get_image_cookie_t sgi_cookie = xcb_shm_get_image(
+                            xconn,             root_window,
+                            xdevt->area.x,     xdevt->area.y,
+                            xdevt->area.width, xdevt->area.height,
+                            0xFFFFFFFF,        XCB_IMAGE_FORMAT_Z_PIXMAP,
+                            shm_segment,       0);
+
+                xcb_shm_get_image_reply_t *sgi_reply = xcb_shm_get_image_reply(
+                            xconn, sgi_cookie, NULL);
+
+                if (sgi_reply) {
+                    //printf("Got xcb_shm_get_image_reply(), data at %p, will save "
+                    //       "as PNG from shared mem\n", shm_data);
+
+                    screenshot_shm = xcb_image_create_native(
+                                xconn,
+                                xdevt->area.width,
+                                xdevt->area.height,
+                                XCB_IMAGE_FORMAT_Z_PIXMAP,
+                                screen->root_depth,  // this would probably be = 24
+                                NULL,         // base == 0
+                                (uint32_t)~0, // bytes == ~0
+                                NULL);
+
+                    if (screenshot_shm) {
+                        screenshot_shm->data = shm_data;
+                        save_as_png(screenshot_shm);
+                        xcb_image_destroy(screenshot_shm);
+                        screenshot_shm = NULL;
+                    }
+
+                    free(sgi_reply);
+                }
+            }
             if (screenshot) {
                 save_as_png(screenshot);
                 xcb_image_destroy(screenshot);
@@ -286,6 +438,13 @@ int main(int argc, char *argv[])
     printf("Event loop ended, cleanup, exit\n");
 
     xcb_damage_destroy(xconn, dmg);
+
+    if (g_can_use_xshm && (shm_id != -1)) {
+        xcb_shm_detach(xconn, shm_segment);
+        shmctl(shm_id, IPC_RMID, 0);
+        shmdt(shm_data);
+    }
+
     xcb_disconnect(xconn);
     return 0;
 }
