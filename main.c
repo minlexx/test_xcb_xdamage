@@ -126,7 +126,7 @@ int main(int argc, char *argv[])
 
     if (!load_x_extensions(xconn)) return EXIT_FAILURE;
 
-    xcb_window_t root_window = 0;
+    xcb_window_t root_window = XCB_NONE;
     xcb_screen_t *screen = screen_of_display(xconn, screen_preferred);
     if (!screen) {
         fprintf(stderr, "Cannot get parameters of the default screen!\n");
